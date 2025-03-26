@@ -4,22 +4,34 @@ import pathlib
 import shutil
 
 class WorkspaceManager():
+    """
+    Utility class for downloading and setting up the SEASAR dataset for your workspace.
+    This should be a plug-&-play class and no edits should be necessary.  Advise you
+    manually clear the cache on your first run for you own knowledge on where it is.
+
+    Args:
+        - clear_cache: Whether to clear the cache the Kaggle dataset gets downloaded to.
+
+    To use, call the 'run_setup' method in your notebook.  There should be no need to call any
+    other method in this class.
+    """
+
 
     def __init__(self, clear_cache: bool = False):
         self._clear_cache = clear_cache
 
     def run_setup(self):
-        project_path = self.get_project_path()
-        self._data_path, self._cached_path = self.setup_SARscope(project_path)
-        self.setup_annotations(self._data_path)
-        self.delete_cache(self._cached_path)
+        project_path = self.__get_project_path__()
+        self._data_path, self._cached_path = self.__setup_SARscope__(project_path)
+        self.__setup_annotations__(self._data_path)
+        self.__delete_cache__(self._cached_path)
 
-    def get_project_path(self):
+    def __get_project_path__(self):
         project_path = pathlib.Path.cwd().parent.resolve()
         print(f"Project path: {project_path}")
         return project_path
 
-    def setup_SARscope(self, project_path: str):
+    def __setup_SARscope__(self, project_path: str):
         kaggle_path = os.path.join(project_path, "data", "kaggle")
 
         if not os.path.exists(kaggle_path):
@@ -40,8 +52,7 @@ class WorkspaceManager():
         data_path = os.path.join(kaggle_path, "SARscope")
         return data_path, cached_path
 
-    def setup_annotations(self, data_path: str):
-        import sys
+    def __setup_annotations__(self, data_path: str):
         # Move the annotation files outside the actual data and into their own folder.
         annotation_folder = os.path.join(data_path, "annotations")
 
@@ -63,7 +74,7 @@ class WorkspaceManager():
                 renamed_annotation_file = dir_item + annotation_file[0]
                 shutil.move(os.path.join(data_path, dir_item, annotation_file[0]), os.path.join(annotation_folder, renamed_annotation_file))
 
-    def delete_cache(self, cached_path: str):
+    def __delete_cache__(self, cached_path: str):
 
         if self._clear_cache:
             # Delete the kailaspsudheer directory to allow for a re-download.

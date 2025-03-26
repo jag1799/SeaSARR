@@ -5,10 +5,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 
-class SAR_DataLoader(torchvision.datasets.VisionDataset):
+class SeaSar(torchvision.datasets.VisionDataset):
 
     """
-    Custom Data Loader object inspired from Pytorch's CocoDetection dataset loader.
+    Custom dataset object inspired from Pytorch's CocoDetection dataset class.
+    Use this to load the SEA-SAR dataset into a Pytorch compatible format prior to
+    putting it in a DataLoader object.
 
     Args:
         - root (str): Root directory for an image set. (i.e. /train, /valid, /test)
