@@ -176,6 +176,13 @@ class ModelWorkerFRCNN:
         - frcnn: FRCNN specific model to train.
         - quiet: Whether to print training, validation, and testing messages.
         - debug: Prints additional messages for debugging throughout code.
+
+
+    NOTE: FRCNN returns a dictionary of different loss values, each described below:
+        1. loss_objectness: Binary cross entropy function to measure whether a region proposal is "background" or an object
+        2. loss_rpn_box_reg: L1 Loss function to measure the loss in the region proposal's bounding box coordinates.
+        3. loss_classifier: Cross Entropy loss function to measure the the classification loss of an object within a region proposal.
+        4. loss_box_reg: L1 Loss function to measure the loss in the bounding box coordinates of the object in a region proposal.
     """
     def __init__(self,
                  train_dataloader: torch.utils.data.DataLoader,
@@ -208,105 +215,135 @@ class ModelWorkerFRCNN:
         self._validation_metrics = {'LOSS': None}
         self._test_metrics = {'LOSS': None}
 
-    def model_train_val(self, epochs: int):
+    def train(self, num_epochs: int, indices_to_skip: list = []):
         """
-        Train and Validate the given model for this worker on the given dataset.
+        Run Training step.
 
         Args:
-            - epochs: Number of epochs to run training and validation for.
-            - quiet: Whether to silence print statements.
-
-        NOTE: FRCNN returns a dictionary of different loss values, each described below:
-            1. loss_objectness: Binary cross entropy function to measure whether a region proposal is "background" or an object
-            2. loss_rpn_box_reg: L1 Loss function to measure the loss in the region proposal's bounding box coordinates.
-            3. loss_classifier: Cross Entropy loss function to measure the the classification loss of an object within a region proposal.
-            4. loss_box_reg: L1 Loss function to measure the loss in the bounding box coordinates of the object in a region proposal.
+            - num_epochs: Number of training iterations to run.
+            - skip_index: Data instances to skip during training
+                - Some data instances are missing their annotations in the Kaggle dataset.  We will skip these and notify the
+                  creator.
+                - Known Indices: [3736]
         """
-        # Set the model to train mode.
-        self._frcnn.train()
 
-        train_losses = []
+        self._frcnn.train()
+        train_epoch_loss = 0
+        training_losses = []
+
+        for epoch in range(num_epochs):
+            for i, (images, annotations) in enumerate(self._train_data):
+                if i in indices_to_skip:
+                    continue
+                try:
+                    # Move all images and annotation values to the correct device
+                    images = tuple([image.to(self._device) for image in images])
+                    annotations = [{key: value.to(self._device) for key, value in target.items()} for target in annotations]
+
+                    # Do forward propagation and get the loss values for the image
+                    # NOTE: train_loss is a dictionary containing different loss values for different things.
+                    # Summing them produces a general loss value for this image, but we can extract different
+                    # metrics using each loss value.  See class description and Pytorch documentation for more
+                    # information.
+                    train_loss = self._frcnn(images, annotations)
+                    train_loss = [loss for loss in train_loss.values()]
+                    train_loss = sum(train_loss)
+
+                    # Backpropagation
+                    self._optimizer.zero_grad()
+                    train_loss.backward()
+                    self._optimizer.step()
+
+                    train_epoch_loss += train_loss
+                    if not self._quiet or self._debug:
+                        print(f"Batch: {i}/{len(self._train_data)} | Batch Loss: {train_loss}\r", end="")
+                except:
+                    print(f"Failed on Batch {i}")
+                    print(f"Image: {images}")
+                    print(f"Annotations: {annotations}")
+
+            training_losses.append(train_epoch_loss)
+            if not self._quiet:
+                print(f"\n\n############# Epoch: {epoch} Complete #############")
+                print(f"\t- Epoch Loss: {train_epoch_loss}\n\n")
+
+        self._train_metrics['LOSS'] = training_losses
+
+    def validation(self, num_epochs: int, indices_to_skip: list = []):
+        """
+        Run Validation step.
+
+        Args:
+            - num_epochs: Number of epochs to run validation.
+        """
+        torch.cuda.empty_cache()
+        self._frcnn.train()
+        validation_epoch_loss = 0
         validation_losses = []
 
-        if self._debug:
-            print("Starting Training/Validation Loop")
-        for epoch in range(epochs):
-            if self._debug:
-                print(f"Starting Training in Epoch {epoch}")
-            train_epoch_loss = self.__train__()
-            if self._debug:
-                print(f"Starting Validation in Epoch: {epoch}")
-            validation_epoch_loss = self.__validation__()
+        for epoch in range(num_epochs):
+            # Run validation batch
+            for i, (images, annotations) in enumerate(self._validation_data):
+                if i in indices_to_skip:
+                    continue
 
-            if not self._quiet or self._debug:
-                print(f"Epoch: {epoch} | Train Loss: {train_epoch_loss} | Validation Loss: {validation_epoch_loss}")
+                # Move all images and annotation values to the correct device
+                images = tuple([image.to(self._device) for image in images])
+                annotations = [{key: value.to(self._device) for key, value in target.items()} for target in annotations]
 
-            train_losses.append(train_epoch_loss)
+                # Do forward propagation and get the loss values for the image
+                # NOTE: validation_loss is a dictionary with different loss values. See class description for more info.
+                validation_loss = self._frcnn(images, annotations)
+                validation_loss = [loss for loss in validation_loss.values()]
+                validation_loss = sum(validation_loss)
+
+                validation_epoch_loss += validation_loss
+
+                if not self._quiet or self._debug:
+                    print(f"Batch: {i}/{len(self._train_data)} | Batch Loss: {validation_loss}\r", end="")
+
             validation_losses.append(validation_epoch_loss)
 
-        if self._debug:
-            print("Finished training/validation")
-        self._train_metrics['LOSS'] = train_losses
+            if not self._quiet:
+                print(f"\n\n############# Epoch: {epoch} Complete #############")
+                print(f"\t- Epoch Loss: {validation_epoch_loss}\n\n")
+
         self._validation_metrics['LOSS'] = validation_losses
 
-    def __train__(self):
+    def model_test(self, test_data: torch.utils.data.DataLoader, quiet: bool = True):
         """
-        Run Training step.  Not to be called directly.
+        Run Testing on the given model for this worker.
 
         Args:
+            - test_data: Loader object for all testing data.
             - quiet: Whether to silence print statements.
         """
-        train_epoch_loss = 0
+        # Set the model to evaluation mode
+        self._frcnn.eval()
 
-        for i, (images, annotations) in enumerate(self._train_data):
-            # Move all images and annotation values to the correct device
-            images = tuple([image.to('cuda') for image in images])
-            annotations = [{key: value.to(self._device) for key, value in target.items()} for target in annotations]
+        testing_losses = []
 
-            # Do forward propagation and get the loss values for the image
-            # NOTE: train_loss is a dictionary containing different loss values for different things.
-            # Summing them produces a general loss value for this image, but we can extract different
-            # metrics using each loss value.  See class description and Pytorch documentation for more
-            # information.
-            train_loss = self._frcnn(images, annotations)
-            train_loss = [loss for loss in train_loss.values()]
-            train_loss = sum(train_loss)
+        with torch.no_grad():
 
-            # Backpropagation
-            self._optimizer.zero_grad()
-            train_loss.backward()
-            self._optimizer.step()
+            for test_batch, (images, annotations) in enumerate(test_data):
+                # try:
+                images = tuple([image.to(self._device) for image in images])
+                annotations = [{key: value.to(self._device) for key, value in target.items()} for target in annotations]
+                # except:
+                #     print(f"Failed on Batch: {test_batch}\n Image: {images}\n Annotations: {annotations}")
 
-            train_epoch_loss += train_loss
-            if not self._quiet or self._debug:
-                print(f"Batch: {i}/{len(self._train_data)} | Batch Loss: {train_loss}\r", end="")
+                # try:
+                test_loss = self._frcnn(images, annotations)
+                print(test_loss)
+                break
+                test_loss = [loss for loss in test_loss.values()]
+                test_loss = sum(test_loss)
 
-        return train_epoch_loss
+                testing_losses.append(test_loss.item())
 
-    def __validation__(self):
-        """
-        Run Validation step.  Not to be called directly.
+                if not quiet:
+                    print(f"Batch: {test_batch}/{len(test_data)} | Batch Loss: {test_loss}\r", end="")
+                # except:
+                #     print(f"Failed on Batch: {test_batch}\n Image: {images}\n Annotations: {annotations}")
 
-        Args:
-            - quiet: Whether to allow print statements or not.
-        """
-        validation_epoch_loss = 0
-
-        # Run validation batch
-        for i, (images, annotations) in enumerate(self._validation_data):
-            # Move all images and annotation values to the correct device
-            images = tuple([image.to(self._device) for image in images])
-            annotations = [{key: value.to(self._device) for key, value in target.items()} for target in annotations]
-
-            # Do forward propagation and get the loss values for the image
-            # NOTE: validation_loss is a dictionary with different loss values. See class description for more info.
-            validation_loss = self._frcnn(images, annotations)
-            validation_loss = [loss for loss in validation_loss.values()]
-            validation_loss = sum(validation_loss)
-
-            validation_epoch_loss += validation_loss
-
-            if not self._quiet or self._debug:
-                print(f"Batch: {i}/{len(self._train_data)} | Batch Loss: {validation_loss}\r", end="")
-
-        return validation_epoch_loss
+        self._test_metrics['LOSS'] = testing_losses
