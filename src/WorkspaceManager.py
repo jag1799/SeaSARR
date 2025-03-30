@@ -22,9 +22,13 @@ class WorkspaceManager():
 
     def run_setup(self):
         project_path = self.__get_project_path__()
-        self._data_path, self._cached_path = self.__setup_SARscope__(project_path)
-        self.__setup_annotations__(self._data_path)
-        self.__delete_cache__(self._cached_path)
+        if not os.path.exists(os.path.join(project_path, "data", "kaggle")):
+            self._data_path, self._cached_path = self.__setup_SARscope__(project_path)
+            self.__setup_annotations__(self._data_path)
+            self.__delete_cache__(self._cached_path)
+        else:
+            self._data_path = self.__setup_SARscope__(project_path)
+
 
     def __get_project_path__(self):
         project_path = pathlib.Path.cwd().parent.resolve()
@@ -37,20 +41,25 @@ class WorkspaceManager():
         if not os.path.exists(kaggle_path):
             os.makedirs(kaggle_path, exist_ok=True)
 
-        # Download the SARscope dataset from Kaggle
-        try:
-            cached_path = kagglehub.dataset_download("kailaspsudheer/sarscope-unveiling-the-maritime-landscape")
-        except:
-            raise LookupError("Unable to download SARscope dataset.")
+            # Download the SARscope dataset from Kaggle
+            try:
+                cached_path = kagglehub.dataset_download("kailaspsudheer/sarscope-unveiling-the-maritime-landscape")
+            except:
+                raise LookupError("Unable to download SARscope dataset.")
 
-        # Get the absolute path and move it.
-        cached_path = os.path.abspath(os.path.join(cached_path, "SARscope"))
+            # Get the absolute path and move it.
+            cached_path = os.path.abspath(os.path.join(cached_path, "SARscope"))
 
-        print(f"Moving cached dataset from directory {cached_path} to {kaggle_path}")
-        shutil.move(cached_path, kaggle_path)
+            print(f"Moving cached dataset from directory {cached_path} to {kaggle_path}")
+            shutil.move(cached_path, kaggle_path)
 
-        data_path = os.path.join(kaggle_path, "SARscope")
-        return data_path, cached_path
+            data_path = os.path.join(kaggle_path, "SARscope")
+
+            return data_path, cached_path
+        else:
+            print(f"Found existing data path at {kaggle_path}")
+            data_path = os.path.join(kaggle_path, "SARscope")
+            return data_path
 
     def __setup_annotations__(self, data_path: str):
         # Move the annotation files outside the actual data and into their own folder.

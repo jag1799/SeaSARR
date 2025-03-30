@@ -1,4 +1,5 @@
 import torch
+from tqdm import tqdm
 
 class ModelWorker:
     """
@@ -31,6 +32,8 @@ class ModelWorker:
             self._device = 'cuda'
         else:
             self._device = 'cpu'
+
+        print(f"Pytorch found device: {self._device}")
 
         # Send the components to whatever device is currently available.
         self._model.to(self._device)
@@ -160,3 +163,150 @@ class ModelWorker:
                     print(f"\tTest Loss: {test_loss.item()}")
 
         self._test_metrics['LOSS'] = testing_losses
+
+
+class ModelWorkerFRCNN:
+    """
+    Training, validation, & testing functionality for use FRCNN in Pytorch.
+
+    Args:
+        - train_data: Dataloader for the training data images and labels.
+        - validation_data: Dataloader for the validation data images and labels.
+        - optimizer: Optimizer for the model.
+        - frcnn: FRCNN specific model to train.
+        - quiet: Whether to print training, validation, and testing messages.
+        - debug: Prints additional messages for debugging throughout code.
+    """
+    def __init__(self,
+                 train_dataloader: torch.utils.data.DataLoader,
+                 validation_dataloader: torch.utils.data.DataLoader,
+                 optimizer: torch.optim.Optimizer,
+                 frcnn: torch.nn.Module,
+                 quiet: bool = True,
+                 debug: bool = False):
+
+        self._train_data = train_dataloader
+        self._validation_data = validation_dataloader
+        self._optimizer = optimizer
+        self._frcnn = frcnn
+        self._quiet = quiet
+        self._debug = debug
+
+        if torch.cuda.is_available():
+            self._device = 'cuda'
+        else:
+            self._device = 'cpu'
+
+        if self._debug:
+            print(f"Pytorch found device: {self._device}")
+
+        # Send the components to whatever device is currently available.
+        self._frcnn.to(self._device)
+
+        # Store general metrics
+        self._train_metrics = {'LOSS': None}
+        self._validation_metrics = {'LOSS': None}
+        self._test_metrics = {'LOSS': None}
+
+    def model_train_val(self, epochs: int):
+        """
+        Train and Validate the given model for this worker on the given dataset.
+
+        Args:
+            - epochs: Number of epochs to run training and validation for.
+            - quiet: Whether to silence print statements.
+
+        NOTE: FRCNN returns a dictionary of different loss values, each described below:
+            1. loss_objectness: Binary cross entropy function to measure whether a region proposal is "background" or an object
+            2. loss_rpn_box_reg: L1 Loss function to measure the loss in the region proposal's bounding box coordinates.
+            3. loss_classifier: Cross Entropy loss function to measure the the classification loss of an object within a region proposal.
+            4. loss_box_reg: L1 Loss function to measure the loss in the bounding box coordinates of the object in a region proposal.
+        """
+        # Set the model to train mode.
+        self._frcnn.train()
+
+        train_losses = []
+        validation_losses = []
+
+        if self._debug:
+            print("Starting Training/Validation Loop")
+        for epoch in range(epochs):
+            if self._debug:
+                print(f"Starting Training in Epoch {epoch}")
+            train_epoch_loss = self.__train__()
+            if self._debug:
+                print(f"Starting Validation in Epoch: {epoch}")
+            validation_epoch_loss = self.__validation__()
+
+            if not self._quiet or self._debug:
+                print(f"Epoch: {epoch} | Train Loss: {train_epoch_loss} | Validation Loss: {validation_epoch_loss}")
+
+            train_losses.append(train_epoch_loss)
+            validation_losses.append(validation_epoch_loss)
+
+        if self._debug:
+            print("Finished training/validation")
+        self._train_metrics['LOSS'] = train_losses
+        self._validation_metrics['LOSS'] = validation_losses
+
+    def __train__(self):
+        """
+        Run Training step.  Not to be called directly.
+
+        Args:
+            - quiet: Whether to silence print statements.
+        """
+        train_epoch_loss = 0
+
+        for i, (images, annotations) in enumerate(self._train_data):
+            # Move all images and annotation values to the correct device
+            images = tuple([image.to('cuda') for image in images])
+            annotations = [{key: value.to(self._device) for key, value in target.items()} for target in annotations]
+
+            # Do forward propagation and get the loss values for the image
+            # NOTE: train_loss is a dictionary containing different loss values for different things.
+            # Summing them produces a general loss value for this image, but we can extract different
+            # metrics using each loss value.  See class description and Pytorch documentation for more
+            # information.
+            train_loss = self._frcnn(images, annotations)
+            train_loss = [loss for loss in train_loss.values()]
+            train_loss = sum(train_loss)
+
+            # Backpropagation
+            self._optimizer.zero_grad()
+            train_loss.backward()
+            self._optimizer.step()
+
+            train_epoch_loss += train_loss
+            if not self._quiet or self._debug:
+                print(f"Batch: {i}/{len(self._train_data)} | Batch Loss: {train_loss}\r", end="")
+
+        return train_epoch_loss
+
+    def __validation__(self):
+        """
+        Run Validation step.  Not to be called directly.
+
+        Args:
+            - quiet: Whether to allow print statements or not.
+        """
+        validation_epoch_loss = 0
+
+        # Run validation batch
+        for i, (images, annotations) in enumerate(self._validation_data):
+            # Move all images and annotation values to the correct device
+            images = tuple([image.to(self._device) for image in images])
+            annotations = [{key: value.to(self._device) for key, value in target.items()} for target in annotations]
+
+            # Do forward propagation and get the loss values for the image
+            # NOTE: validation_loss is a dictionary with different loss values. See class description for more info.
+            validation_loss = self._frcnn(images, annotations)
+            validation_loss = [loss for loss in validation_loss.values()]
+            validation_loss = sum(validation_loss)
+
+            validation_epoch_loss += validation_loss
+
+            if not self._quiet or self._debug:
+                print(f"Batch: {i}/{len(self._train_data)} | Batch Loss: {validation_loss}\r", end="")
+
+        return validation_epoch_loss
