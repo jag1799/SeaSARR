@@ -3,8 +3,7 @@ import gc
 import torch
 import sys
 
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
+import torchvision
 
 
 class ModelWorkerFRCNN:
@@ -73,8 +72,7 @@ class ModelWorkerFRCNN:
             for i, (images, annotations) in enumerate(train_dataloader):
                 train_batch_losses = {'total_loss': 0, 'loss_objectness': 0, 'loss_rpn_box_reg': 0, 'loss_box_reg': 0, 'loss_classifier': 0}
                 if i in indices_to_skip:
-                    # continue
-                    break
+                    continue
                 try:
                     # Move all images and annotation values to the correct device
                     images = tuple([image.to(self._device) for image in images])
@@ -171,8 +169,7 @@ class ModelWorkerFRCNN:
                 # Run validation batch
                 for i, (images, annotations) in enumerate(validation_dataloader):
                     if i in indices_to_skip:
-                        # continue
-                        break
+                        continue
                     # Move all images and annotation values to the correct device
                     images = tuple([image.to(self._device) for image in images])
                     annotations = [{key: value.to(self._device) for key, value in target.items()} for target in annotations]
@@ -212,11 +209,11 @@ class ModelWorkerFRCNN:
                 if not self._quiet:
                     print(f"\n\n############# Epoch: {epoch} Complete #############")
                     print(f"\t- Epoch Loss: {validation_epoch_losses}\n\n")
-                    print(f"Total Batch Loss: {validation_epoch_losses['total_loss'][epoch]}")
-                    print(f"Loss Objectness: {validation_epoch_losses['loss_objectness']}")
-                    print(f"RPN Region Proposal Losses: {validation_epoch_losses['loss_rpn_box_reg'][epoch]}")
-                    print(f"Classifier Loss: {validation_epoch_losses['loss_classifier'][epoch]}")
-                    print(f"Bounding Box Region Loss: {validation_epoch_losses['loss_box_reg'][epoch]}")
+                    print(f"\tTotal Batch Loss: {validation_epoch_losses['total_loss'][epoch]}")
+                    print(f"\tLoss Objectness: {validation_epoch_losses['loss_objectness']}")
+                    print(f"\tRPN Region Proposal Losses: {validation_epoch_losses['loss_rpn_box_reg'][epoch]}")
+                    print(f"\tClassifier Loss: {validation_epoch_losses['loss_classifier'][epoch]}")
+                    print(f"\tBounding Box Region Loss: {validation_epoch_losses['loss_box_reg'][epoch]}")
 
             self._validation_metrics['loss'] = validation_epoch_losses
 
@@ -233,43 +230,29 @@ class ModelWorkerFRCNN:
             - test_data: Loader object for all testing data.
             - threshold: Minimum bounding box score to consider in our metric calculations
         """
-        import numpy as np
         # Set the model to evaluation mode
         self._frcnn.eval()
-
+        i = 0
         with torch.no_grad():
             for test_batch, (images, annotations) in enumerate(test_data):
                 images = tuple([image.to(self._device) for image in images])
                 annotations = [{key: value.to(self._device) for key, value in target.items()} for target in annotations]
 
-                pred = self._frcnn(images, annotations)
+                test_prediction = self._frcnn(images, annotations) # Make a prediction on the current image.
 
-                valid_predictions = {}
-                # Convert all results in the batch to numpy arrays
-                # Extract indices that have scores exceeding minimum threshold.
-                # These are predictions that are closest to the ground truth
-                for prediction in range(len(pred)):
-                    scores = pred[prediction]['scores'].cpu().detach().numpy()
-                    bboxes = pred[prediction]['boxes'].cpu().detach().numpy()
-                    valid_predictions[prediction] = {'scores': [], 'bboxes': []}
-                    for i in range(len(scores)):
-                        if scores[i] > threshold:
-                            valid_predictions[prediction]['scores'].append(scores[i])
-                            valid_predictions[prediction]['bboxes'].append(bboxes[i])
-                print(valid_predictions)
-                for image in images:
-                    plt.imshow(image.cpu().permute(1, 2, 0))
-                    for bbox in valid_predictions[0]['bboxes']:
-                        try:
-                            width = bbox[2] - bbox[0]
-                            height = bbox[3] - bbox[1]
+                best_idxs = []
+                test_scores = test_prediction[0]['scores'].cpu().detach()
+                test_boxes = test_prediction[0]['boxes'].cpu().detach()
 
-                            ax = plt.gca()
-                            rect = patches.Rectangle([bbox[0], bbox[1]], width, height, edgecolor='r', facecolor='none')
-                            ax.add_patch(rect)
-                        except Exception as e:
-                            print(e)
-                    plt.show()
-                break
+                # For each image, there can be several predicted bounding boxes with different scores. Go through them
+                # and get the ones that have a score exceeding the threshold.
+                for idx in range(len(test_scores)):
+                    if test_scores[idx] > threshold:
+                         best_idxs.append(idx)
 
-        # return 0
+
+                # Find the Intersection over Union for each "best" bounding box compared to the ground truth annotation
+                ground_truth = torch.unsqueeze(annotations[0]['boxes'][0].cpu().detach(), 0)
+                best_predictions = test_boxes[[best_idxs]]
+                if not self._quiet:
+                    print(f"Image IOU: {torchvision.ops.box_iou(ground_truth, best_predictions)}\r", end="")
