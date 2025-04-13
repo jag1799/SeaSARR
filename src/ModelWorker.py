@@ -84,6 +84,9 @@ class ModelWorkerFRCNN:
                     # metrics using each loss value.  See class description and Pytorch documentation for more
                     # information.
                     train_loss = self._frcnn(images, annotations)
+                    if isinstance(train_loss, tuple):
+                        train_loss = train_loss[0]
+
                     train_loss_dict = train_loss
 
                     # Calculate total batch loss across all categories for backpropagation
@@ -177,6 +180,9 @@ class ModelWorkerFRCNN:
                     # Do forward propagation and get the loss values for the image
                     # NOTE: validation_loss is a dictionary with different loss values. See class description for more info.
                     validation_loss = self._frcnn(images, annotations)
+                    if isinstance(validation_loss, tuple):
+                        validation_loss = validation_loss[0]
+
                     validation_loss_dict = validation_loss
 
                     validation_loss = [loss for loss in validation_loss.values()]
