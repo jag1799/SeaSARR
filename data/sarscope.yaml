@@ -1,0 +1,6 @@
+
+train: /home/jag1799/Documents/vscode_ws/school/ai_570/SeaSARR/data/kaggle/SARscope/train
+val: /home/jag1799/Documents/vscode_ws/school/ai_570/SeaSARR/data/kaggle/SARscope/valid
+
+nc: 1
+names: ['ship']

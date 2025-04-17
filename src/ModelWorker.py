@@ -2,6 +2,7 @@ from copy import deepcopy
 import gc
 import torch
 import sys
+import matplotlib.pyplot as plt
 
 import torchvision
 
@@ -48,8 +49,8 @@ class ModelWorkerFRCNN:
         self._frcnn.to(self._device)
 
         # Store general metrics
-        self._train_metrics = {'loss': None}
-        self._validation_metrics = {'loss': None}
+        self._train_metrics = {'LOSS': None, 'num_epochs': None}
+        self._validation_metrics = {'LOSS': None, 'num_epochs': None}
         self._test_results = {}
 
     def train(self, train_dataloader: torch.utils.data.DataLoader, num_epochs: int, indices_to_skip: list = []):
@@ -64,14 +65,15 @@ class ModelWorkerFRCNN:
                   creator.
                 - Known Indices: [3736]
         """
-
+        self._train_metrics['num_epochs'] = num_epochs
         self._frcnn.train()
-        training_epoch_losses = {'total_loss': [], 'loss_objectness': [], 'loss_rpn_box_reg': [], 'loss_box_reg': [], 'loss_classifier': []}
+        training_epoch_losses = {'epoch_loss': [], 'loss_objectness': [], 'loss_rpn_box_reg': [], 'loss_box_reg': [], 'loss_classifier': []}
 
         for epoch in range(num_epochs):
+            train_batch_losses = {'epoch_loss': 0, 'loss_objectness': 0, 'loss_rpn_box_reg': 0, 'loss_box_reg': 0, 'loss_classifier': 0}
             for i, (images, annotations) in enumerate(train_dataloader):
-                train_batch_losses = {'total_loss': 0, 'loss_objectness': 0, 'loss_rpn_box_reg': 0, 'loss_box_reg': 0, 'loss_classifier': 0}
                 if i in indices_to_skip:
+                    break
                     continue
                 try:
                     # Move all images and annotation values to the correct device
@@ -96,7 +98,7 @@ class ModelWorkerFRCNN:
                     # Convert the losses to regular python values for metric tracking
                     train_loss_dict = {key: value.cpu().detach().numpy().tolist() for key, value in train_loss_dict.items()}
 
-                    train_batch_losses['total_loss'] += train_loss
+                    train_batch_losses['epoch_loss'] += float(train_loss.cpu().detach())
                     train_batch_losses['loss_objectness'] += train_loss_dict['loss_objectness']
                     train_batch_losses['loss_rpn_box_reg'] += train_loss_dict['loss_rpn_box_reg']
                     train_batch_losses['loss_box_reg'] += train_loss_dict['loss_box_reg']
@@ -108,7 +110,7 @@ class ModelWorkerFRCNN:
                     self._optimizer.step()
 
                     if not self._quiet or self._debug:
-                        print(f"Batch: {i}/{len(train_dataloader)} | Batch Loss: {train_batch_losses['total_loss']}\r", end="")
+                        print(f"Batch: {i}/{len(train_dataloader)} | Batch Loss: {train_loss}\r", end="")
 
                 except Exception as e:
                     print(e)
@@ -117,19 +119,20 @@ class ModelWorkerFRCNN:
                     print(f"Annotations: {annotations}")
                     sys.exit(-1)
 
-            training_epoch_losses['total_loss'].append(train_batch_losses['total_loss'])
-            training_epoch_losses['loss_objectness'].append(train_batch_losses['loss_objectness'])
-            training_epoch_losses['loss_rpn_box_reg'].append(train_batch_losses['loss_rpn_box_reg'])
-            training_epoch_losses['loss_box_reg'].append(train_batch_losses['loss_box_reg'])
-            training_epoch_losses['loss_classifier'].append(train_batch_losses['loss_classifier'])
+            training_epoch_losses['epoch_loss'].append(train_batch_losses['epoch_loss'])
+            training_epoch_losses['loss_objectness'].append(float(train_batch_losses['loss_objectness']))
+            training_epoch_losses['loss_rpn_box_reg'].append(float(train_batch_losses['loss_rpn_box_reg']))
+            training_epoch_losses['loss_box_reg'].append(float(train_batch_losses['loss_box_reg']))
+            training_epoch_losses['loss_classifier'].append(float(train_batch_losses['loss_classifier']))
 
             if not self._quiet:
                 print(f"\n\n############# Epoch: {epoch} Complete #############")
-                print(f"Total Batch Loss: {training_epoch_losses['total_loss'][epoch]}")
-                print(f"Loss Objectness: {training_epoch_losses['loss_objectness']}")
+                print(f"Total Epoch Combined Loss: {training_epoch_losses['epoch_loss'][epoch]}")
+                print(f"Loss Objectness: {training_epoch_losses['loss_objectness'][epoch]}")
                 print(f"RPN Region Proposal Losses: {training_epoch_losses['loss_rpn_box_reg'][epoch]}")
                 print(f"Classifier Loss: {training_epoch_losses['loss_classifier'][epoch]}")
                 print(f"Bounding Box Region Loss: {training_epoch_losses['loss_box_reg'][epoch]}")
+            print("\n")
 
             self._train_metrics['loss'] = training_epoch_losses
 
@@ -163,15 +166,16 @@ class ModelWorkerFRCNN:
             - validation_dataloader: Validation data place within Pytorch dataloader object
             - num_epochs: Number of epochs to run validation.
         """
-
+        self._validation_metrics['num_epochs'] = num_epochs
         self._frcnn.train()
-        validation_epoch_losses = {'total_loss': [], 'loss_objectness': [], 'loss_rpn_box_reg': [], 'loss_box_reg': [], 'loss_classifier': []}
+        validation_epoch_losses = {'epoch_loss': [], 'loss_objectness': [], 'loss_rpn_box_reg': [], 'loss_box_reg': [], 'loss_classifier': []}
         with torch.no_grad():
             for epoch in range(num_epochs):
-                validation_batch_losses = {'total_loss': 0, 'loss_objectness': 0, 'loss_rpn_box_reg': 0, 'loss_box_reg': 0, 'loss_classifier': 0}
+                validation_batch_losses = {'epoch_loss': 0, 'loss_objectness': 0, 'loss_rpn_box_reg': 0, 'loss_box_reg': 0, 'loss_classifier': 0}
                 # Run validation batch
                 for i, (images, annotations) in enumerate(validation_dataloader):
                     if i in indices_to_skip:
+                        break
                         continue
                     # Move all images and annotation values to the correct device
                     images = tuple([image.to(self._device) for image in images])
@@ -188,7 +192,7 @@ class ModelWorkerFRCNN:
                     validation_loss = [loss for loss in validation_loss.values()]
                     validation_loss = sum(validation_loss)
                     validation_loss_dict = {key: value.cpu().detach().numpy().tolist() for key, value in validation_loss_dict.items()}
-                    validation_batch_losses['total_loss'] += validation_loss
+                    validation_batch_losses['epoch_loss'] += validation_loss.cpu().detach()
                     validation_batch_losses['loss_objectness'] += validation_loss_dict['loss_objectness']
                     validation_batch_losses['loss_rpn_box_reg'] += validation_loss_dict['loss_rpn_box_reg']
                     validation_batch_losses['loss_box_reg'] += validation_loss_dict['loss_box_reg']
@@ -207,24 +211,24 @@ class ModelWorkerFRCNN:
                     gc.collect()
                     torch.cuda.empty_cache()
 
-                validation_epoch_losses['loss_objectness'].append(validation_loss['loss_objectness'])
-                validation_epoch_losses['loss_rpn_box_reg'].append(validation_loss['loss_rpn_box_reg'])
-                validation_epoch_losses['loss_box_reg'].append(validation_loss['loss_box_reg'])
-                validation_epoch_losses['loss_classifier'].append(validation_loss['loss_classifier'])
+                validation_epoch_losses['epoch_loss'].append(validation_batch_losses['epoch_loss'])
+                validation_epoch_losses['loss_objectness'].append(float(validation_batch_losses['loss_objectness']))
+                validation_epoch_losses['loss_rpn_box_reg'].append(float(validation_batch_losses['loss_rpn_box_reg']))
+                validation_epoch_losses['loss_box_reg'].append(float(validation_batch_losses['loss_box_reg']))
+                validation_epoch_losses['loss_classifier'].append(float(validation_batch_losses['loss_classifier']))
 
                 if not self._quiet:
                     print(f"\n\n############# Epoch: {epoch} Complete #############")
-                    print(f"\t- Epoch Loss: {validation_epoch_losses}\n\n")
-                    print(f"\tTotal Batch Loss: {validation_epoch_losses['total_loss'][epoch]}")
+                    print(f"\tTotal Epoch Loss: {validation_epoch_losses['epoch_loss'][epoch]}")
                     print(f"\tLoss Objectness: {validation_epoch_losses['loss_objectness']}")
                     print(f"\tRPN Region Proposal Losses: {validation_epoch_losses['loss_rpn_box_reg'][epoch]}")
                     print(f"\tClassifier Loss: {validation_epoch_losses['loss_classifier'][epoch]}")
                     print(f"\tBounding Box Region Loss: {validation_epoch_losses['loss_box_reg'][epoch]}")
 
-            self._validation_metrics['loss'] = validation_epoch_losses
+            self._validation_metrics['LOSS'] = validation_epoch_losses
 
             # Clean up final validation variables for memory conservation
-            del validation_losses
+            del validation_batch_losses
             gc.collect()
             torch.cuda.empty_cache()
 
@@ -262,3 +266,57 @@ class ModelWorkerFRCNN:
                 best_predictions = test_boxes[[best_idxs]]
                 if not self._quiet:
                     print(f"Image IOU: {torchvision.ops.box_iou(ground_truth, best_predictions)}\r", end="")
+
+    def plot_losses(self, plot_train: bool = True):
+        fig, ax = plt.subplots(nrows=1, ncols=5, figsize=(26, 5))
+        if plot_train:
+            ax[0].plot(range(0, self._train_metrics['num_epochs']), self._train_metrics['LOSS']['epoch_loss'])
+            ax[0].set_title("Training Epoch Combined Losses")
+            ax[0].set_xlabel("Epochs")
+            ax[0].set_ylabel("Loss")
+
+            ax[1].plot(range(0, self._train_metrics['num_epochs']), self._train_metrics['LOSS']['loss_objectness'])
+            ax[1].set_title("Training Epoch Objectness Losses")
+            ax[1].set_xlabel("Epochs")
+            ax[1].set_ylabel("Loss")
+
+            ax[2].plot(range(0, self._train_metrics['num_epochs']), self._train_metrics['LOSS']['loss_rpn_box_reg'])
+            ax[2].set_title("Training Epoch RP Network Proposed Box Losses")
+            ax[2].set_xlabel("Epochs")
+            ax[2].set_ylabel("Loss")
+
+            ax[3].plot(range(0, self._train_metrics['num_epochs']), self._train_metrics['LOSS']['loss_box_reg'])
+            ax[3].set_title("Training Epoch Proposed Box Losses")
+            ax[3].set_xlabel("Epochs")
+            ax[3].set_ylabel("Loss")
+
+            ax[4].plot(range(0, self._train_metrics['num_epochs']), self._train_metrics['LOSS']['loss_classifier'])
+            ax[4].set_title("Training Epoch Classification Losses")
+            ax[4].set_xlabel("Epochs")
+            ax[4].set_ylabel("Loss")
+        else:
+            ax[0].plot(range(0, self._validation_metrics['num_epochs']), self._validation_metrics['LOSS']['epoch_loss'])
+            ax[0].set_title("Validation Epoch Losses")
+            ax[0].set_xlabel("Epochs")
+            ax[0].set_ylabel("Loss")
+
+            ax[1].plot(range(0, self._validation_metrics['num_epochs']), self._validation_metrics['LOSS']['loss_objectness'])
+            ax[1].set_title("Training Epoch Objectness Losses")
+            ax[1].set_xlabel("Epochs")
+            ax[1].set_ylabel("Loss")
+
+            ax[2].plot(range(0, self._validation_metrics['num_epochs']), self._validation_metrics['LOSS']['loss_rpn_box_reg'])
+            ax[2].set_title("Training Epoch RP Network Proposed Box Losses")
+            ax[2].set_xlabel("Epochs")
+            ax[2].set_ylabel("Loss")
+
+            ax[3].plot(range(0, self._validation_metrics['num_epochs']), self._validation_metrics['LOSS']['loss_box_reg'])
+            ax[3].set_title("Training Epoch Proposed Box Losses")
+            ax[3].set_xlabel("Epochs")
+            ax[3].set_ylabel("Loss")
+
+            ax[4].plot(range(0, self._validation_metrics['num_epochs']), self._validation_metrics['LOSS']['loss_classifier'])
+            ax[4].set_title("Training Epoch Classification Losses")
+            ax[4].set_xlabel("Epochs")
+            ax[4].set_ylabel("Loss")
+
