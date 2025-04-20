@@ -247,6 +247,9 @@ class ModelWorkerFRCNN:
                 annotations = [{key: value.to(self._device) for key, value in target.items()} for target in annotations]
 
                 test_prediction = self._frcnn(images, annotations) # Make a prediction on the current image.
+                # Canny and Robinson Compass output a tuple of wrapper of test_predictions, throwing error. Fix it
+                if isinstance(test_prediction, tuple):
+                    test_prediction = test_prediction[0]
                 maP.update(test_prediction, annotations)
                 test_boxes = test_prediction[0]['boxes'].cpu().detach()
 
