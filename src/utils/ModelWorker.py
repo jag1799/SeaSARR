@@ -1,10 +1,9 @@
-from copy import deepcopy
 import gc
 import torch
 import sys
 import matplotlib.pyplot as plt
-
-import torchvision
+from torchmetrics.functional.detection import intersection_over_union
+from torchmetrics.detection import MeanAveragePrecision
 
 
 class ModelWorkerFRCNN:
@@ -51,7 +50,6 @@ class ModelWorkerFRCNN:
         # Store general metrics
         self._train_metrics = {'LOSS': None, 'num_epochs': None}
         self._validation_metrics = {'LOSS': None, 'num_epochs': None}
-        self._test_results = {}
 
     def train(self, train_dataloader: torch.utils.data.DataLoader, num_epochs: int, indices_to_skip: list = []):
         """
@@ -154,7 +152,7 @@ class ModelWorkerFRCNN:
         training_epoch_losses = None
         self._optimizer = None
         del training_epoch_losses
-        del self._optimizer
+        # del self._optimizer
         gc.collect()
         torch.cuda.empty_cache()
 
@@ -238,85 +236,118 @@ class ModelWorkerFRCNN:
 
         Args:
             - test_data: Loader object for all testing data.
-            - threshold: Minimum bounding box score to consider in our metric calculations
+            - threshold: Minimum IOU score to consider in our metric calculations.
         """
+        performance = {"Image": [], "Ground Truth": [], "Prediction": []}
+
+        # maP = MeanAveragePrecision()
         # Set the model to evaluation mode
         self._frcnn.eval()
-        i = 0
         with torch.no_grad():
             for test_batch, (images, annotations) in enumerate(test_data):
                 images = tuple([image.to(self._device) for image in images])
                 annotations = [{key: value.to(self._device) for key, value in target.items()} for target in annotations]
 
                 test_prediction = self._frcnn(images, annotations) # Make a prediction on the current image.
-
-                best_idxs = []
-                test_scores = test_prediction[0]['scores'].cpu().detach()
+                # maP.update(test_prediction, annotations)
                 test_boxes = test_prediction[0]['boxes'].cpu().detach()
 
-                # For each image, there can be several predicted bounding boxes with different scores. Go through them
-                # and get the ones that have a score exceeding the threshold.
-                for idx in range(len(test_scores)):
-                    if test_scores[idx] > threshold:
-                         best_idxs.append(idx)
+                ground_truth = []
+                # Find the Intersection over Union for each bounding box compared to the ground truth annotation
+                for gt in annotations[0]['boxes']:
+                    ground_truth.append(torch.unsqueeze(gt.cpu().detach(), 0)[0])
 
+                ground_truth = torch.stack(ground_truth)
 
-                # Find the Intersection over Union for each "best" bounding box compared to the ground truth annotation
-                ground_truth = torch.unsqueeze(annotations[0]['boxes'][0].cpu().detach(), 0)
-                best_predictions = test_boxes[[best_idxs]]
+                performance["Ground Truth"].append(ground_truth)
+                performance["Prediction"].append(test_boxes)
+                performance["Image"].append([image.cpu().detach() for image in images])
+
                 if not self._quiet:
-                    print(f"Image IOU: {torchvision.ops.box_iou(ground_truth, best_predictions)}\r", end="")
+                    print(f"Test Batch: {test_batch}\r", end="")
+
+        # return performance, maP
+        return performance
 
     def plot_losses(self, plot_train: bool = True):
         fig, ax = plt.subplots(nrows=1, ncols=5, figsize=(26, 5))
         if plot_train:
-            ax[0].plot(range(0, self._train_metrics['num_epochs']), self._train_metrics['LOSS']['epoch_loss'])
-            ax[0].set_title("Training Epoch Combined Losses")
-            ax[0].set_xlabel("Epochs")
-            ax[0].set_ylabel("Loss")
-
-            ax[1].plot(range(0, self._train_metrics['num_epochs']), self._train_metrics['LOSS']['loss_objectness'])
-            ax[1].set_title("Training Epoch Objectness Losses")
-            ax[1].set_xlabel("Epochs")
-            ax[1].set_ylabel("Loss")
-
-            ax[2].plot(range(0, self._train_metrics['num_epochs']), self._train_metrics['LOSS']['loss_rpn_box_reg'])
-            ax[2].set_title("Training Epoch RP Network Proposed Box Losses")
-            ax[2].set_xlabel("Epochs")
-            ax[2].set_ylabel("Loss")
-
-            ax[3].plot(range(0, self._train_metrics['num_epochs']), self._train_metrics['LOSS']['loss_box_reg'])
-            ax[3].set_title("Training Epoch Proposed Box Losses")
-            ax[3].set_xlabel("Epochs")
-            ax[3].set_ylabel("Loss")
-
-            ax[4].plot(range(0, self._train_metrics['num_epochs']), self._train_metrics['LOSS']['loss_classifier'])
-            ax[4].set_title("Training Epoch Classification Losses")
-            ax[4].set_xlabel("Epochs")
-            ax[4].set_ylabel("Loss")
+            for i, (key, value) in enumerate(self._train_metrics['LOSS'].items()):
+                ax[i].plot(range(0, self._train_metrics['num_epochs']), value)
+                ax[i].set_title(f"Training Epoch {key}")
+                ax[i].set_xlabel("Epochs")
+                ax[i].set_ylabel(key)
         else:
-            ax[0].plot(range(0, self._validation_metrics['num_epochs']), self._validation_metrics['LOSS']['epoch_loss'])
-            ax[0].set_title("Validation Epoch Losses")
-            ax[0].set_xlabel("Epochs")
-            ax[0].set_ylabel("Loss")
+            for i, (key, value) in enumerate(self._validation_metrics['LOSS'].items()):
+                ax[i].plot(range(0, self._validation_metrics['num_epochs']), value)
+                ax[i].set_title(f"Validation Epoch {key}")
+                ax[i].set_xlabel("Epochs")
+                ax[i].set_ylabel(key)
 
-            ax[1].plot(range(0, self._validation_metrics['num_epochs']), self._validation_metrics['LOSS']['loss_objectness'])
-            ax[1].set_title("Training Epoch Objectness Losses")
-            ax[1].set_xlabel("Epochs")
-            ax[1].set_ylabel("Loss")
+    def get_test_metrics(self, performance: dict, threshold: float):
+        """
+        Calculates the Intersection over Union, true positives, false positives, and false negatives.
+        Then uses those to find the Precision and Recall for each ground truth element.
 
-            ax[2].plot(range(0, self._validation_metrics['num_epochs']), self._validation_metrics['LOSS']['loss_rpn_box_reg'])
-            ax[2].set_title("Training Epoch RP Network Proposed Box Losses")
-            ax[2].set_xlabel("Epochs")
-            ax[2].set_ylabel("Loss")
+        According to this link: https://www.comet.com/site/blog/compare-object-detection-models-from-torchvision/,
+            - True Positives are predicted bounding boxes whose IOU is greater than the threshold.
+            - False Positives are predicted bounding boxes whose IOU is less than the threshold.
+            - False Negatives are ground truth bounding boxes with no predictions made on them.
 
-            ax[3].plot(range(0, self._validation_metrics['num_epochs']), self._validation_metrics['LOSS']['loss_box_reg'])
-            ax[3].set_title("Training Epoch Proposed Box Losses")
-            ax[3].set_xlabel("Epochs")
-            ax[3].set_ylabel("Loss")
+        Args:
+            - performance: Dictionary containing the test result bounding boxes.
+            - threshold: The Intersection over Union threshold.
 
-            ax[4].plot(range(0, self._validation_metrics['num_epochs']), self._validation_metrics['LOSS']['loss_classifier'])
-            ax[4].set_title("Training Epoch Classification Losses")
-            ax[4].set_xlabel("Epochs")
-            ax[4].set_ylabel("Loss")
+        Returns:
+            - performance: Updated dictionary containing the IOU, TP, FP, and FN values.
+        """
 
+        performance['True Positives'] = 0
+        performance['False Positives'] = 0
+        performance['False Negatives'] = 0
+        performance['Precisions'] = []
+        performance['Recalls'] = []
+        performance['Best IOU'] = []
+        for i, truth_boxes in enumerate(performance['Ground Truth']):
+            for box in truth_boxes:
+                if len(performance['Prediction'][i]) == 0:
+                    performance['False Negatives'] += 1
+                else:
+                    best_iou = torch.max(intersection_over_union(performance['Prediction'][i], box.unsqueeze(0)))
+                    if best_iou >= threshold:
+                        performance['True Positives'] += 1
+                    elif best_iou < threshold and best_iou != 0:
+                        performance['False Positives'] += 1
+                    elif best_iou == 0:
+                        performance['False Negatives'] += 1
+
+                    performance['Best IOU'].append(best_iou)
+
+                tp, fp, fn = performance['True Positives'], performance['False Positives'], performance['False Negatives']
+
+                if tp > 0 or fp > 0:
+                    precision = tp / (tp + fp)
+                else:
+                    precision = 0
+
+                if tp > 0 or fn > 0:
+                    recall = tp / (tp + fn)
+                else:
+                    recall = 0
+
+                performance['Precisions'].append(precision)
+                performance['Recalls'].append(recall)
+
+        return performance
+
+    def plot_PR_curve(self, performance: dict):
+        """
+        Plots the Precision-Recall curve.  performance dictionary must have True Positives, False Positives,
+        and False Negatives keys from the get_test_metrics() method.
+
+        Args:
+            - performance: Dictionary containing most up-to-date metrics.
+        """
+        plt.plot(performance['Recalls'], performance['Precisions'])
+        plt.xlabel("Recall")
+        plt.ylabel("Precision")

@@ -31,7 +31,7 @@ class WorkspaceManager():
 
 
     def __get_project_path__(self):
-        project_path = pathlib.Path.cwd().parent.resolve()
+        project_path = pathlib.Path.cwd().parent.resolve().parent.resolve()
         print(f"Project path: {project_path}")
         return project_path
 
