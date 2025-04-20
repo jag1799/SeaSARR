@@ -71,7 +71,6 @@ class ModelWorkerFRCNN:
             train_batch_losses = {'epoch_loss': 0, 'loss_objectness': 0, 'loss_rpn_box_reg': 0, 'loss_box_reg': 0, 'loss_classifier': 0}
             for i, (images, annotations) in enumerate(train_dataloader):
                 if i in indices_to_skip:
-                    break
                     continue
                 try:
                     # Move all images and annotation values to the correct device
@@ -152,7 +151,7 @@ class ModelWorkerFRCNN:
         training_epoch_losses = None
         self._optimizer = None
         del training_epoch_losses
-        # del self._optimizer
+        del self._optimizer
         gc.collect()
         torch.cuda.empty_cache()
 
@@ -173,7 +172,6 @@ class ModelWorkerFRCNN:
                 # Run validation batch
                 for i, (images, annotations) in enumerate(validation_dataloader):
                     if i in indices_to_skip:
-                        break
                         continue
                     # Move all images and annotation values to the correct device
                     images = tuple([image.to(self._device) for image in images])
@@ -240,7 +238,7 @@ class ModelWorkerFRCNN:
         """
         performance = {"Image": [], "Ground Truth": [], "Prediction": []}
 
-        # maP = MeanAveragePrecision()
+        maP = MeanAveragePrecision()
         # Set the model to evaluation mode
         self._frcnn.eval()
         with torch.no_grad():
@@ -249,7 +247,7 @@ class ModelWorkerFRCNN:
                 annotations = [{key: value.to(self._device) for key, value in target.items()} for target in annotations]
 
                 test_prediction = self._frcnn(images, annotations) # Make a prediction on the current image.
-                # maP.update(test_prediction, annotations)
+                maP.update(test_prediction, annotations)
                 test_boxes = test_prediction[0]['boxes'].cpu().detach()
 
                 ground_truth = []
@@ -266,8 +264,7 @@ class ModelWorkerFRCNN:
                 if not self._quiet:
                     print(f"Test Batch: {test_batch}\r", end="")
 
-        # return performance, maP
-        return performance
+        return performance, maP
 
     def plot_losses(self, plot_train: bool = True):
         fig, ax = plt.subplots(nrows=1, ncols=5, figsize=(26, 5))
@@ -316,10 +313,8 @@ class ModelWorkerFRCNN:
                     best_iou = torch.max(intersection_over_union(performance['Prediction'][i], box.unsqueeze(0)))
                     if best_iou >= threshold:
                         performance['True Positives'] += 1
-                    elif best_iou < threshold and best_iou != 0:
+                    elif best_iou < threshold:
                         performance['False Positives'] += 1
-                    elif best_iou == 0:
-                        performance['False Negatives'] += 1
 
                     performance['Best IOU'].append(best_iou)
 
