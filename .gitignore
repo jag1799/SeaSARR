@@ -1,2 +1,4 @@
 *kaggle
+*.pt
+*.pth
 *__pycache__

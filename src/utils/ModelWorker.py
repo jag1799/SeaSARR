@@ -216,7 +216,7 @@ class ModelWorkerFRCNN:
                 if not self._quiet:
                     print(f"\n\n############# Epoch: {epoch} Complete #############")
                     print(f"\tTotal Epoch Loss: {validation_epoch_losses['epoch_loss'][epoch]}")
-                    print(f"\tLoss Objectness: {validation_epoch_losses['loss_objectness']}")
+                    print(f"\tLoss Objectness: {validation_epoch_losses['loss_objectness'][epoch]}")
                     print(f"\tRPN Region Proposal Losses: {validation_epoch_losses['loss_rpn_box_reg'][epoch]}")
                     print(f"\tClassifier Loss: {validation_epoch_losses['loss_classifier'][epoch]}")
                     print(f"\tBounding Box Region Loss: {validation_epoch_losses['loss_box_reg'][epoch]}")
